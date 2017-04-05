@@ -1,0 +1,1136 @@
+---
+title: "Summary work"
+author: Kevin Jepson, Stephanie Blain, Mackenzie Kinney, Garrett McCarthy, Kenneth
+  Askelson and Yann Dubois
+output:
+  html_notebook:
+    toc: yes
+  html_document:
+    toc: yes
+header-includes: \usepackage{amsmath}
+---
+
+# Introduction 
+
+## Motivation and Background Work
+
+Acute myeloid leukemia (AML) is the most common acute hematologic malignancy in adults, and is characterized by infiltration of the bone marrow and blood by highly proliferative, abnormally differentiated promyeloid cells (1). The standard practices for treating AML have been consistent for the past three decades. The first stage of treatment is induction, where patients undergo chemotherapy in order to stimulate the complete differentiation of immature, cancerous promyelocytes (2). A commonly used chemotherapeutic inducing agent is all trans-retinoic acid (ATRA), which stimulates granulocytic differentiation and prevents promyelocyte proliferation with extremely high efficacy. While ATRA has been used as a standard AML treatment for decades, the underlying mechanism has not been fully established (3). This is an important area of AML research, because understanding the mechanism of ATRA-induced differentiation would help clinicians investigate the root-causes which prevent normal hematopoietic stem cell differentiation.
+
+Since their discovery in 1993, there has been a significant amount of research showing the importance of miRNAs in cancer development (4). To analyze the role of miRNA in AML, several published studies have used bulk microarray analyses to describe the miRNA expression patterns associated with ATRA-induced differentiation. These papers have shown that there are a few key miRNAs— such as miR-663, miR-223, and miR-494— which become significantly upregulated in response to ATRA-induced differentiation (5, 6). However, a more in-depth analysis using next-generation sequencing techniques is required to achieve a better understanding of these mechanisms.
+
+This project will analyze single-cell miRNA sequencing data from HL-60 cells— a promyeloblast cell-line which is commonly used as a differentiation model— along a 7-day time-course of ATRA treatment. Our overall objective is to utilize next-generation sequencing data to investigate the role of miRNA in ATRA-induced differentiation. In doing so, we hope to gain further insight into which molecular pathways are important in this process and determine whether temporal changes in miRNA expression are involved. Furthermore, we will determine whether ATRA-induced differentiation leads to a homogenous culture of granulocytes, or if there are separate differentiation pathways which result in significant cellular heterogeneity. Our general hypothesis is that the HL-60 miRNA expression signatures will change as the cells differentiate relative to time. More specifically, we predict that the expression of well-known differentiation-associated miRNAs— such as miR-663, miR-223, and miR-494— will become increasingly upregulated as treatment progresses (5, 6). Lastly, due to the heterogeneity of cancer cells, we expect to observe distinct subpopulations of HL-60 cells following ATRA-induced differentiation; this may provide evidence suggesting multiple biological pathways are taking place.
+
+## Dataset
+
+Our data set for the 7-day time-course of ATRA treatment on HL-60 cells includes data for 319 single cells: 92 cells at Day 0 of treatment, 89 cells at Day 1, 85 cells at Day 3, and 53 cells at Day 7. On each day, individual cells were collected and isolated in a microfluidic chip, and then run through a single-cell miRNA sequencing protocol similar to the one described by Faridani et al. in 2016 (5). The resulting libraries were sequenced on an Illumina MiSeq platform. (For additional information, reference our group's [Data Folder](https://github.com/STAT540-UBC/team_The-Zoo-Crew/tree/master/Data))
+
+## Aims and Methodology
+
+The principal biological question that we hope to investigate is whether the HL-60 cells have distinct miRNA expression signatures at different time points of ATRA treatment. Additionally, it will be interesting to measure the heterogeneity of these populations. If distinct subpopulations are present, is there evidence of multiple ATRA-induced differentiation pathways in effect? Are the expression patterns of these miRNAs consistent throughout treatment, or do they follow a specific pattern with respect to time? Which miRNAs and which biological mechanisms are involved in ATRA-induced differentiation? In order to answer these questions, we will take advantage of several computational/statistical approaches. We will use multiple linear regression in conjunction with p-value histograms to both identify differences in miRNA expression signatures across the time points and determine whether or not these identified differences are truly significant. In order to investigate heterogeneity of subpopulations and the differentiation pathways, we will use hierarchical clustering functions and t-SNE plots to help visualize and analyze the evolution of the HL-60 cells (8). Lastly, in order to determine which biological mechanisms are involved in ATRA-induced granulocytic differentiation, we will use “guilt-by-association” algorithms such as gene set enrichment analysis, functional enrichment analysis and GeneMANIA (9, 10). 
+
+# Analysis
+
+## Setting up the environment
+
+```{r loading_data, results='hide', message=FALSE, warning=FALSE}
+# Packages
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(tidyr)
+library(RColorBrewer)
+library(limma)
+library(gplots)
+library(edgeR)
+library(devtools)
+library(ggbiplot)
+library(DESeq)
+library(geneplotter)
+library(Rtsne)
+library(NMF)
+library(gridExtra)
+
+set.seed(1234) # makes everything reproductible 
+
+meta_data <- read.table("../Data/raw_data/meta_data.txt", header = TRUE)
+dataInitial <- read.table("../Data/raw_data/expn_matrix.txt", header = TRUE, row.names = 1)
+spike_data <- read.table("../Data/raw_data/expn_matrix_spike.txt", header = TRUE, row.names = 1)
+```
+
+## Normalization 
+
+Normalization is essential in RNAseq. Unlike mRNA, there are very few constitutively active miRNA genes or “house-keeping” miRNAs that are expressed at consistent levels. As a result, we cannot use standard techniques such as quantile normalization. To deal with this issue, we rely heavily on the spike-in size fractions to normalize the data and account for potential batch effects. Although spike-in data have been shown not to be satisfying enough for RNA-seq [(11)](http://www.nature.com/nbt/journal/v32/n9/full/nbt.2931.html) [(12)](http://www.nature.com/nbt/journal/v32/n9/full/nbt.2957.html). It is common in miRNAseq because of the "house-keeping" issue discussed above [(13)](http://onlinelibrary.wiley.com/doi/10.1002/ijc.25376/full).
+
+The normalization is broken up into 2 main parts. First we scale the counts of each sample by the counts of spike RNA in this sample. Secondly we remove all cells that are dead.
+
+Note: When we will analyse the differential expression of each miRNA, we will additionaly normalize by the library size, indeed that is done by default in Voom.
+
+```{r normalize_kevin}
+# finding sum of column and adding it as new row
+spike_data <- rbind(spike_data, "Totals" = colSums(spike_data))
+scaled_totals <- spike_data["Totals", ]
+average_reads <- rowMeans(scaled_totals)
+
+# NORMALIZING BY SPIKE-RNA
+scaled_totals <- rbind(scaled_totals, "Scale" = scaled_totals[1, ] / average_reads) 
+
+# setting dim_names for upcoming matrix
+dim_names <- list(row.names(dataInitial))       
+dim_names[2] <- list(colnames((dataInitial)))
+
+# pre-making a matrix
+normalized_data <- matrix(nrow = nrow(dataInitial), ncol = ncol(dataInitial), dimnames = dim_names) 
+
+# for loop which scales data by the spike miRNA and saves it as normalized_data
+for(i in 1: ncol(dataInitial)){   
+  normalized_data[ , i] <- dataInitial[ , i] / (scaled_totals[2, i])
+}
+normalized_data <- as.data.frame(normalized_data)
+
+total_data <- rbind(spike_data, "Total Spike" = colSums(spike_data), "Total Reads Norm" = colSums(normalized_data), "Total Reads Init" = colSums(dataInitial))
+
+### KEEEP???
+if (FALSE){
+total_cellular <- total_data["Total Reads Norm", ]
+average_reads <- rowMeans(total_cellular)
+cell_scales <- rbind(total_cellular, "Scale" = total_cellular[1, ] / average_reads) #dividing total spike values by average spike values
+dim_names <- list(row.names(dataInitial))       #setting dim_names for upcoming matrix
+dim_names[2] <- list(colnames((dataInitial)))
+normalized_data2 <- matrix(nrow = nrow(dataInitial), ncol = ncol(dataInitial), dimnames = dim_names) #pre-making a matrix
+for(i in 1: ncol(dataInitial)){   #for loop which scales data and saves it as normalized_data
+  normalized_data2[ , i] <- normalized_data[ , i] / (cell_scales[2, i])
+}
+normalized_data <- as.data.frame(normalized_data2)
+}
+####
+
+# DELETING DEAD CELLS
+alive_indexes <- list() #initializing lists
+k <- 1  #initializing counter
+for(i in 1:ncol(total_data)){
+  if(total_data["Total Reads Init", i] > 20000){
+    alive_indexes[k] <- i
+    k <- k + 1
+  }
+}
+
+alive_data <- normalized_data[ , as.numeric(alive_indexes)]
+alive_meta_data <- meta_data[as.numeric(alive_indexes), ]
+
+# saving completely normalized data as n_data and n_meta_data
+n_data <- alive_data
+n_meta_data <- alive_meta_data
+
+# makes group and design matrix
+data_day <- as.character(n_meta_data$Population)
+data_day <- recode(data_day, "HL60D0" = "Day 0", "HL60D1" = "Day 1", "HL60D3" = "Day 3", "HL60D7" = "Day 7")
+data_day <- factor(data_day)
+
+design <- model.matrix(~0 + n_meta_data$Population)
+# deletes "n_meta_data$Population" from name of columns
+colnames(design) <- gsub("n_meta_data\\$PopulationHL60", "", colnames(design))
+
+# Keeps genes without all zeros miRNA
+dataNZ <- n_data[which(rowSums(n_data) > 0),] 
+
+# making the contrast matrix for comparing each group
+contrastMatrix <- makeContrasts(D1-D0,
+                                D3-D0,
+                                D7-D0,
+                                D1-D3,
+                                D1-D7,
+                                D3-D7,
+                                levels = c("D0","D1","D3","D7"))
+
+# Removes unnecessary big data
+remove(normalized_data)
+remove(n_data)
+remove(alive_data)
+remove(alive_meta_data)
+remove(dataInitial)
+```
+
+## Data exploration
+
+### PCA
+
+For all of our PCA plots we will first use a log transformation to make the data approximatively follow the homoscedasticity assumption. 
+
+#### PCA standardized
+
+Knowing the importance of having standardized data for PCA, we could think of standardizing ours. This in general is a good idea, as variables are often not on the same scale and thus cannot be compared directly. Here, however, we have dimensions that are comparable as they each represent the number of miRNA in the sample. It is therefore a good idea not to standrdize, as it will unnecessarily decrease the variance explained. More information on this can be found on the following forums: [here](http://stats.stackexchange.com/questions/105592/not-normalizing-data-before-pca-gives-better-explained-variance-ratio) or [here](http://stats.stackexchange.com/questions/69157/why-do-we-need-to-normalize-data-before-analysis). Out of curiosity we will still plot the standardized data:
+
+```{r PCA_NZ}
+#Log transform
+log_normalized_dataNZ <- log(dataNZ)
+log_normalized_dataNZ[log_normalized_dataNZ == "-Inf"] <- 0
+
+data_pcaNZ <- prcomp(t(log_normalized_dataNZ), center = TRUE, scale. = TRUE)
+ggbiplot(data_pcaNZ, 
+              scale = 1, 
+              obs.scale = 1, 
+              varname.abbrev = FALSE,
+              var.axes = FALSE,
+              pc.biplot =TRUE,
+              circle = TRUE, 
+              groups = data_day, 
+              ellipse= TRUE) +
+  ggtitle("PCA with standardization") + 
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+# will not be needed: don't keep big data
+remove(data_pcaNZ)
+remove(log_normalized_dataNZ)
+```
+
+From this plot we see that as we've supposed, the variance explained is lower than in the first one. We thus conclude that we should use a non standardized PCA.
+
+#### PCA no standardization
+
+```{r PCA}
+# log transform
+log_normalized_data <- log(dataNZ)
+log_normalized_data[log_normalized_data == "-Inf"] <- 0
+
+data_pca <- prcomp(t(log_normalized_data))
+ggbiplot(data_pca, 
+              scale = 1, 
+              obs.scale = 1, 
+              varname.abbrev = FALSE,
+              var.axes = FALSE,
+              pc.biplot =TRUE,
+              circle = TRUE, 
+              groups = data_day, 
+              ellipse= TRUE) +
+  ggtitle("PCA without standardization") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5))  
+
+# will not be needed: don't keep big data
+remove(data_pca)
+remove(log_normalized_data)
+```
+Note: The PCA graph is interesting as it shows that after each day the clusters seem to go down in PC2 and extend their variance in PC1. PC2 is probably mainly a single miRNA which gets less expressed as days pass.
+
+#### PCA top 50 
+
+Let's now only plot the PCA of the 50 genes. As we've discussed before, we will not standardize the data.
+
+```{r PCA_top50}
+# arranging data based on total expression
+indexTopFifty <- sort(rowSums(dataNZ), index=T, decreasing=TRUE)$ix[1:50]
+topFifty <- dataNZ[indexTopFifty,]
+
+# Log transform
+log_topFifty <- log(topFifty)
+log_topFifty[log_topFifty == "-Inf"] <- 0
+
+# PCA
+data_topFifty <- prcomp(t(log_topFifty))
+ggbiplot(data_topFifty, 
+              scale = 1, 
+              obs.scale = 1, 
+              varname.abbrev = FALSE,
+              var.axes = FALSE,
+              pc.biplot =TRUE,
+              circle = TRUE, 
+              groups = data_day, 
+              ellipse= TRUE) +
+  ggtitle("PCA top 50 genes") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+# will not be needed: don't keep big data
+remove(data_topFifty)
+remove(log_topFifty)
+remove(topFifty)
+```
+
+### Correlation heatmap
+
+```{r correlation_heatmap}
+# computing sample-sample correlations
+normalized_data_cor <- cor(dataNZ)  
+
+cor_dat <- as.data.frame(normalized_data_cor)
+
+labs <- list(Population = n_meta_data$Population)
+
+NMF::aheatmap(cor_dat, 
+              annCol = labs, annRow = labs, Rowv = NA, Colv = NA, labRow = NA, labCol = NA, 
+              main = "Sample-Sample Correlation Matrix")
+
+#will not be needed: don't keep big data
+remove(normalized_data_cor)
+```
+
+On this correlation heatmap we've scaled the values to be centered around zero. This explains why the "observed correlation" has values that can be negative. In reality, all the the sample are relatively strongly correlated. This is not suprising as many miRNA are not differentially expressed between samples.
+
+In this heat map we clearly see the high correlation between the samples of day 0 and 1 and between the samples of day 3 and 7. 
+
+### t-SNE plots
+
+#### General t-SNE
+
+Let's plot the t-SNE plots to see if we can find clusters and / or outliers.
+
+```{r tsne_General}
+
+# ordering data by expn
+alive_tsne_data <- cbind(dataNZ, "avg_expn" = rowMeans(dataNZ), "miRNA" = row.names(dataNZ)) 
+alive_tsne_data <- dplyr::arrange(alive_tsne_data,desc(avg_expn))
+alive_tsne_data <- t(alive_tsne_data)
+colnames(alive_tsne_data) <- alive_tsne_data["miRNA", ]
+#removes rows that were added for ordering
+alive_tsne_data <- alive_tsne_data[!rownames(alive_tsne_data) %in% c("miRNA","avg_expn"), ]
+
+# Runs tsne
+tsne_out <- Rtsne(dist(alive_tsne_data))
+
+# Show the objects in the 2D tsne representation
+qplot(x=tsne_out$Y[,1], y=tsne_out$Y[,2],color=data_day) + 
+  labs(colour = "Cell Type", x = "tsne1", y = "tsne2")+
+  ggtitle("t-SNE alive cells and non zero genes") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+#will not be needed: don't keep big data
+remove(tsne_out)
+```
+
+
+As with the correlation heatmap, we see that  the samples from day 0 and 1 are clustered together while those from day 3 and 7 are clustered together. There also seems to be a small difference between days of the same cluster, but these difference are smaller than between clusters.
+
+#### t-SNE of Day 0 and Day 1
+
+Now that we have seen that the samples from day 0 and 1 are closely related. Let's try to take only those 2 in order to see if we can separate them from each other. 
+
+```{r tsne_day01}
+# tsne on Day 0/Day 1 cells only
+indexDay01 <- which(data_day %in% c("Day 0","Day 1"))
+# selecting only day 0 and day 1 cells
+group_one_data <- alive_tsne_data[indexDay01, ] 
+
+# Run TSNE
+tsne_out <- Rtsne(dist(group_one_data)) 
+
+# Show the objects in the 2D tsne representation
+qplot(x=tsne_out$Y[,1], y=tsne_out$Y[,2],color=data_day[indexDay01]) +
+  labs(colour = "Cell Type", x = "tsne1", y = "tsne2") +
+  ggtitle("t-SNE only day 0 and 1") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+#will not be needed: don't keep big data
+remove(tsne_out)
+```
+
+The t-SNE can not cleraly separate the 2 samples from each other. Finally let's investigate whether they can be separated with a t-SNE in 3 dimension:
+
+```{r tsne_day01_3D}
+tsne_out <- Rtsne(dist(group_one_data), dims = 3) # Run TSNE in 3 dimensions
+
+plot_ly(x=tsne_out$Y[,1],
+        y=tsne_out$Y[,2],
+        z=tsne_out$Y[,3],
+        type="scatter3d",
+        color=data_day[indexDay01],
+        mode="markers") %>% 
+  layout(title = 't-SNE day 0 and 1 3D')
+
+#will not be needed: don't keep big data
+remove(tsne_out)
+remove(group_one_data)
+```
+
+Even with the 3 dimensional t-SNE, it is hard / impossible to distinguish between day 0 and 1. Indeed, we need to remember that the colours were added and not found by the t-sne plots. This really shows how similar day 0 and 1 seem to be.
+
+#### t-SNE of Day 3 and Day 7
+
+Now let's look at the cluster Day 3 and 7, to see if they can be distinguished.
+
+```{r tsne_day37}
+#tsne on Day 3/Day 7 cells only
+indexDay37 <- which(data_day %in% c("Day 3","Day 7"))
+#selecting only day 3 and day 7 cells
+group_two_data <- alive_tsne_data[indexDay37, ] 
+
+# Run TSNE
+tsne_out <- Rtsne(dist(group_two_data)) 
+# Show the objects in the 2D tsne representation
+qplot(x=tsne_out$Y[,1], y=tsne_out$Y[,2],color=data_day[indexDay37]) +
+  labs(colour = "Cell Type", x = "tsne1", y = "tsne2") +
+  ggtitle("t-SNE only day 3 and 7") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+#will not be needed: don't keep big data
+remove(tsne_out)
+remove(alive_tsne_data)
+```
+
+As before, the 2 type of cells cannot be distinguished with a t-SNE plot in 2D. They will probably not be distinguishable in 3D but let's be sure:
+
+```{r tsne_day37_3D}
+tsne_out <- Rtsne(dist(group_two_data), dims = 3) # Run TSNE in 3 dimensions
+
+plot_ly(x=tsne_out$Y[,1],
+        y=tsne_out$Y[,2],
+        z=tsne_out$Y[,3],
+        type="scatter3d",
+        color=data_day[indexDay37],
+        mode="markers") %>% 
+  layout(title = 't-SNE day 3 and 7 3D')
+
+#will not be needed: don't keep big data
+remove(tsne_out)
+remove(group_two_data)
+```
+
+The second cluster cannot be fully seperated further with 3 dimensional t-SNE, but it is already closer than in 2D.
+
+## Comparing the expression of miRNA
+
+In order to find differentially expressed genes we will be fitting a linear model. 
+
+**Note** that for fitting linear models, we cannot use the DATASEQ library as it requires counts (i.e. discrete values). We now have continuous values because of they way we normalized the data.
+
+### Mean-Variance trend
+
+It would be an error to directly fit a linear model to our data, indeed RNA-seq is count data which has strong heteroscedasticity. To prove this, let's notice that if we randomly pick $R_{lib}$ RNA given that the abundance (propotion) of a gene $g$ is $\alpha$. Then we will see $R_g$ such RNA where:
+$$R_g \sim\ \mathcal{Bin}(R_{lib},\alpha)$$
+Which can be approximated by 
+$$R_g \sim\ \mathcal{Pois}(R_{lib} * \alpha)$$
+Taking $lim_{R_{lib} * \alpha \rightarrow \infty}$
+$$R_g \sim\ \mathcal{N}(R_{lib} * \alpha,R_{lib} * \alpha)$$
+Which clearly showes that count data violates the assumption of homoscedasticity. The problem is that ordinary least squarres assumes the same variance at each point. If the variance is higher in certain regions then these regions would get more weights than they should. Indeed $Ttest \propto \frac{1}{\sigma}$. 
+
+There are many possible ways to take this problem into account. We chose to go with limma voom method as it is a competitive method [(14)](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29) that works well with low count RNAseq [(15)](https://f1000research.com/articles/5-2122/v1).
+The idea is simply to fit a weighted regression, with the weights inversely proportional to the variance of the point. The variance of the point is estimated using a lowess smoother in a log(mean) - sqrt(variance) trend.
+
+
+#### Initial Mean-Variance Trend
+
+With this explanation we see the importance of a mean - variance plot, let's now plot it.
+
+```{r intial_mean_variance}
+dge <- DGEList(counts=dataNZ, group = data_day)
+
+# applies TMM normalization to dge
+#dge <- calcNormFactors(dge)
+data_voomed <- voom(dge,design,plot=TRUE)
+
+#will not be needed: don't keep big data
+remove(dge)
+```
+
+The mean-variance trend is suprising: it doesn't look flat enough. This could indicate a problem with the normalization of our data, but after further analysis we didn't find any issue. Note that the data may well be strange due to the nature of miRNA-seq data, indeed in RNAseq we often have high value of counts but in miRNA the number of counts are much lower. This could cause the spike we see below x = zero (i.e. very low mean).
+
+Lets check whether the strange mean variance is due to the clusters that we have.
+
+```{r histogramm_voom}
+df <- data_voomed$E
+dataf<- mutate(data.frame(t(df)), group = data_day) %>% 
+  gather(mirna, exp, - group) 
+
+ggplot(dataf, aes(x=exp)) + 
+  geom_histogram(aes(fill = group), colour = 'white')+
+  ggtitle("Distribution of counts with respect to the groups") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+#will not be needed: don't keep big data
+remove(dataf)
+remove(df)
+```
+
+We see that our model seems to be bimodal but that the bimodality doesn't seem to be due to the clusters.
+
+#### Filtered Mean-Variance Trend
+
+After reading in details limma's manual [(16)](https://www.bioconductor.org/packages/devel/bioc/vignettes/limma/inst/doc/usersguide.pdf), we realized that we should fiter out rows that have at least 10 counts for a worthwhile number of samples (paragraph 15.5). 
+
+We will be using $30\%$ as a "worthwhile number of samples".
+
+```{r final_mean_variance}
+# filtering out rows that have non zero counts in less than 30% of the samples
+dataNZFilterd <-dataNZ[rowSums(dataNZ>=10)>=round(0.3*ncol(dataNZ)),]
+
+dge <- DGEList(counts=dataNZFilterd, group = data_day)
+
+#dge <- dge[isExpr,]
+#dge <- calcNormFactors(dge)
+data_voomed <- voom(dge,design,plot=TRUE)
+
+#will not be needed: don't keep big data
+remove(dge)
+remove(dataNZFilterd)
+```
+
+It is now already a bit better. We also see that the mean variance trend seams to be decreasing very quickly and steadily, we can thus conclude that the experiment seem to be of low biological variation [(17)](https://f1000research.com/articles/5-1408) (see "Removing heteroscedascity from count data"). 
+
+Here is an example of the data we have:
+
+```{r }
+data_voomed[1:2,1:10]
+```
+
+#### More Natural Filtered Mean-Variance Trend
+
+Thinking about it, we shouldn't filter on having as good percentage of the samples that are non zero but rather having a majority of non zero in at least one time point we have. Indeed that's what really interests us at the end, because we are going to compare the miRNAseq between days! For example imagine we had an miRNA which was highly expressed in every sample of Day 0, but equal to zero in all toher samples, then it would get filtered out because it would be non zero in only $25\%$ of the total samples. This is of course not desired. 
+
+We will thus only keep the miRNA in which at least $50\%$ of the samples in one group have count greater than 10.
+
+```{r final_mean_variance_bis}
+indexDay0 <- which(data_day == "Day 0")
+indexDay1 <- which(data_day == "Day 1")
+indexDay3 <- which(data_day == "Day 3")
+indexDay7 <- which(data_day == "Day 7")
+dataNZFilterdBis <- dataNZ[rowSums(dataNZ[,indexDay0]>=10)>=round(0.50*length(indexDay0)) |
+                          rowSums(dataNZ[,indexDay1]>=10)>=round(0.50*length(indexDay1)) |
+                          rowSums(dataNZ[,indexDay3]>=10)>=round(0.50*length(indexDay3)) |
+                          rowSums(dataNZ[,indexDay7]>=10)>=round(0.50*length(indexDay7)) ,]
+
+dge <- DGEList(counts=dataNZFilterdBis, group = data_day)
+
+#dge <- calcNormFactors(dge)
+data_voomed <- voom(dge,design,plot=TRUE)
+```
+
+We see that it is very close to before but at least now there's no issue with genes being filtered out even if they have a high expression in most samples of a group. This also reduces the subjectivity of what is "a worthile number of samples need to have more than 10 counts for that miRNA".
+
+Lets look now at the histogram to see how it changed it:
+
+```{r Final_histogramm_voom}
+df <- data_voomed$E
+dataf<- mutate(data.frame(t(df)), group = data_day) %>% 
+  gather(mirna, exp, - group) 
+
+ggplot(dataf, aes(x=exp)) + 
+  geom_histogram(aes(fill = group), colour = 'white') +
+  ggtitle("Distribution of filtered counts with respect to the groups") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+
+#will not be needed: don't keep big data
+remove(dataf)
+remove(df)
+```
+
+The bimodality of the plot doesn't seem to be due to clusters with this histogram. But that doesn't rule out completely the effect of the groups. Indeed some miRNA may only be highly expressed in one cluster and othesr in the second cluster. We thus need to look at the interaction between miRNA and cluster. 
+
+##### Distribution of expression with respect to miRNA and clusters
+
+```{r  fig.width=9, fig.height=10}
+data_group <- as.character(data_day)
+data_group[data_group == "Day 0" | data_group == "Day 1"] <- "Day01"
+data_group[data_group == "Day 3" | data_group == "Day 7"] <- "Day37"
+
+#makes a data frame with all information
+df <- data_voomed$E
+dataf4 <- data.frame(df)
+dataf4$mirna <- as.factor(rownames(dataf4))
+dataf4 <- gather(dataf4,samples, exp,-mirna);
+dataf4$group <-  as.factor(data_group);
+dataf4$day <-  data_day;
+dataf4 <- mutate(dataf4, interGroup = paste(as.character(dataf4$mirna),data_group) )
+dataf4 <- mutate(dataf4, interGroup2 = paste(as.character(dataf4$mirna),as.character(data_day)) )
+dataf4$exp2 <- 2^dataf4$exp-0.5
+randRNA <- unique(dataf4$mirna)[sample(1:length(unique(dataf4$mirna)), 12, replace=FALSE)]
+
+ggplot(dataf4[dataf4$mirna %in% randRNA,], aes(x=exp, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random density plot for interaction miRNA-group") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(0,30) +
+  facet_wrap(~mirna,nrow = 4,ncol = 3)
+
+#will not be needed: don't keep big data
+remove(df)
+```
+
+With this we clearly see that there is no link between the clusters and miRNA and the bimodality of the distribution. The bimodality is nearly always present for all miRNA. 
+
+This may seem suprising at first, but after further consideration the bimodality is amplified by the log transformation of the data. Indeed, the log transformation of the expression data makes a wider range of high expression seem smaller. Here is a plot that shows the same data but not logtransformed.
+
+```{r  fig.width=9, fig.height=10}
+ggplot(dataf4[dataf4$mirna %in% randRNA,], aes(x=exp2, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random density plot for interaction miRNA-group: no log") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(-500,10000) +
+  facet_wrap(~mirna,nrow = 5,ncol = 3)
+
+```
+
+We clearly see that the non tranformed data is not as bimodal as it seemed to be. The miRNA are simply off or on, but there's a wide range of "on states". Note: it is suprising to see that for the random genes we took, there doesn't seem to be any link between groups and "on-off" states.
+
+### Fit linear model 
+
+For comparing the expression of multiple miRNA we will use a linear model. In order to gain statistical power we will be using emirical bayes method to "borrow information across all miRNA". The idea of bayes method is to shrink the estimated sample variance towardsa pooled estimate, which results in more stable inference for samples with smaller size [(18)](http://www.statsci.org/smyth/pubs/ebayes.pdf). We will be using Limma's package to implement empirical bayes linear model. 
+
+**Note**: The strength of empirical bayes, is that compared to classical bayes method, it doesn't require the input of prior. Indeed, it will find a the prior from the data.
+
+#### Linear model: day as a numeric
+
+Let's now look at linear model where the day is considered as numeric and not a factor.
+
+```{r}
+# Convert population to a numeric variable.
+Pop.num<-as.numeric(substr(n_meta_data$Population,6,6))
+n_meta_data<-cbind(n_meta_data,Pop.num)
+
+des.pop.num<-model.matrix(~Pop.num,n_meta_data)
+v.pop.num<-voom(dge,des.pop.num, plot=FALSE)
+
+# Next, fit linear model with day as a factor.
+fit.pop.num <- lmFit(v.pop.num,des.pop.num)
+efit.pop.num <- eBayes(fit.pop.num)
+
+# store result 
+top.pop.num<-topTable(efit.pop.num,number=Inf)
+
+# Look at table with top genes.
+top.pop.num[1:10,]
+
+fdr.pop.num<-nrow(subset(top.pop.num,adj.P.Val<0.01))
+
+remove(v.pop.num)
+
+```
+
+There are now `r fdr.pop.num` genes at a false discovery rate of 0.01.
+
+Finally, as before, lets make a histogram of p-values.
+```{r}
+hist(top.pop.num$adj.P.Val,breaks=29,main="Q-value Histogram - Day as numeric",xlab="Q-Value")
+hist(top.pop.num$P.Value,breaks=29,main="P-value Histogram - Day as numeric",xlab="P-Value")
+
+remove(top.pop.num)
+```
+
+This histogramm looks perfect for us! This clearly shows that most of our miRNA live in the alternative hypothesis. It also shows a approximatively uniformly distribution of p-values under the null hypothesis (on the right), as we would think. Note: this histogramm seems stangely "too good" in the sense that the number of miRNA differntially expressed seems huge. Note that this is possible because we are looking at miRNA seq with a "on" or "off" differntiation.
+
+#### Linear model: day as a factor
+```{r test_linear_model }
+des.pop.char<-model.matrix(~Population,n_meta_data)
+v.pop.char<-voom(dge,des.pop.char, plot=FALSE)
+fit.pop.char <- lmFit(v.pop.char,des.pop.char)
+efit.pop.char <- eBayes(fit.pop.char)
+
+top.pop.char<-topTable(efit.pop.char,number=Inf)
+plotSA(efit.pop.char,main="Final Mean-Variance plot")
+
+#will not be needed: don't keep big data
+remove(fit)
+remove(v.pop.char)
+```
+On this plot we see how the data is after having transformed it with limma. We note that the variance is now nearly independent to the expression (although this doesn't seem true for the last few points). This shows us that the data is homoscedatic enough to fit a linear model. 
+
+Let's now have a look at table with top genes.
+```{r}
+top.pop.char[1:10,]
+```
+
+##### P-values and FDR
+
+Get some probe names and really low p-values (i.e. P-Value < 0.01).
+
+```{r}
+fdr.pop.char<-nrow(subset(top.pop.char,adj.P.Val<0.01))
+```
+
+There are `r fdr.pop.char` genes at a false discovery rate of 0.01.
+
+Finally, make a histogram of p-values.
+```{r}
+hist(top.pop.char$adj.P.Val,breaks=29,main="Q-value Histogram - Population as a factor",xlab="Q-Value")
+hist(top.pop.char$P.Value,breaks=29,main="P-value Histogram - Population as a factor",xlab="P-Value")
+
+remove(top.pop.char)
+```
+
+As before the p-value histograms are really nice and show that our experiment has a lot of miRNA that live in the alternative hypothesis. This plot is a bit strange in the sense that there is even less miRNA in the null hypothesis.
+
+#### Linear model: cluster as a factor
+Compare days 0 and 3 to days 3 and 7
+```{r results='hide'}
+gsub("HL60D0","Day 0 or 1",n_meta_data$Population)
+levels(n_meta_data$Population)
+cluster<-character()
+for(x in n_meta_data$Population){
+  if(x == "HL60D0"){
+    cluster<-append(cluster,"Day 0 or 1")
+  }
+  if(x == "HL60D1"){
+    cluster<-append(cluster,"Day 0 or 1")
+  }
+  if(x == "HL60D3"){
+    cluster<-append(cluster,"Day 3 or 7")
+  }
+  if(x == "HL60D7"){
+    cluster<-append(cluster,"Day 3 or 7")
+  }
+}
+n_meta_data<-cbind(n_meta_data,cluster) #make factor for cluster
+```
+
+Design matrix, voom and fit linear model
+```{r}
+des.cluster<-model.matrix(~cluster,n_meta_data)
+v.cluster<-voom(dge,des.cluster, plot=FALSE)
+fit.cluster <- lmFit(v.cluster,des.cluster)
+efit.cluster <- eBayes(fit.cluster)
+top.cluster<-topTable(efit.cluster,number=Inf)
+
+fdr.cluster<-subset(top.cluster,adj.P.Val<0.01)
+top.cluster[1:10,]
+
+remove(v.cluster)
+remove(efit.cluster)
+```
+
+There are `r nrow(fdr.cluster)` genes at a false discovery rate of 0.01.
+
+Make another set of histograms.
+```{r}
+hist(top.cluster$adj.P.Val,breaks=19,main="Q-value Histogram - Cluster as a factor",xlab="Q-Value")
+hist(top.cluster$P.Value,breaks=19,main="P-value Histogram - Cluster as a factor",xlab="P-Value")
+```
+
+
+Look at top few genes
+```{r}
+# Define plotting function
+cluster1<-gsub("HL60D0","Day 0 or 1",n_meta_data$Population)
+cluster1<-gsub("HL60D1","Day 0 or 1",cluster1)
+cluster1<-gsub("HL60D3","Day 3 or 7",cluster1)
+cluster1<-gsub("HL60D7","Day 3 or 7",cluster1)
+meta2<-cbind(n_meta_data,cluster1)
+
+#function which combines expression data with metaData
+prepareData2 <- function(genes) {   
+  miniDat <-  subset(dataNZ, rownames(dataNZ) %in% genes)
+  miniDat <- data.frame(gExp = as.vector(t(as.matrix(miniDat))),
+                        gene = factor(rep(rownames(miniDat), each = ncol(miniDat)),
+                                      levels = genes))
+  miniDat <- suppressWarnings(data.frame(meta2, miniDat))
+  
+  return(miniDat)
+}
+
+topGenes <- rownames(top.cluster[1:10,])
+prepDatTop<-prepareData2(topGenes) #format data
+
+ggplot(data=subset(prepDatTop,prepDatTop$gene==topGenes[1]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(topGenes[1]) +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+  
+remove(top.cluster)
+```
+
+#### Linear model: day as a factor without intercept
+
+For the following analysis we will be using the day as factors.
+
+##### Examining the number of DE genes
+
+Let's now look at differential expression levels of genes. 
+
+Note that we will be using an adjusted p-value cutoff is 5%.
+
+```{r test_linear_model_summary }
+fit <- lmFit(data_voomed, design)
+fit <- contrasts.fit(fit, contrasts=contrastMatrix)
+efit <- eBayes(fit)
+
+dt <- decideTests(efit)
+summary(dt)
+```
+
+Although we see that most miRNA are not differentially expresse between day 1 and day 0, we can be suprised of the amount of differentially expressed between day 3 and day 7. From this table we could hypothesize that the majority of miRNA doesn't have the "time" to get differentially expressed between day 0 and day 1. Often these genes get differentially expressed betweeen day 1 and 3, which could have multiple effect on the whole cell. Finally between day 3 and day 7, these same genes could get differentially expressed to "return" to a state close to the initial one. From this table we could even go one step further and say that often then miRNA get upregulated from day 1 to day 3 and then downregulated back to a "normal state" from day 3 to day 7.
+Of course we would need more proof to support this hypthesis, but that would be a plausible interpretation of the table.
+
+###### Many miRNA are downregulated between day 1 and 3 and then upregulated again at day 7
+
+If our previous hypothesis were correct, that would mean that most of the differentially expressed gene between day 1 and 3 are also differentially expressed in day 7. Let's look at this with a nice venn diagramm:
+
+```{r venn_hypothesis}
+nInversD1D3D7 <- nrow(dt[(dt[,4] * dt[,6]== -1), ])
+nSameD1D3D7 <- nrow(dt[(dt[,4] * dt[,6]== 1), ])
+nTotalD1D3D7 <- nrow(dt[dt[,4] != 0 | dt[,6] != 0,c(4,6)])
+vennDiagram(dt[dt[,4] != 0 | dt[,6] != 0,c(4,6)], circle.col=c("turquoise", "salmon", "green","yellow"), main = "Venn diagramm differentially expressed D1-D3 and D3-7")
+```
+
+As hypothesised, we see that most of the miRNA are differntailly expressed in both cases. Now to go one step further we can compute the number of miRNA that are differentially expressed in the "opposite direction" between day1-day3 and day3-day7 . Indeed, if day 3 were a "transition state" as supposed, then most of the miRNA's would get differntially expressed in one direction from day1 to day3 and then come back to "normal" from day3 to day7. 
+
+Out of the `r nTotalD1D3D7` differentially expressed genes in either D1-D3, D3-D7 or both, there are `r nInversD1D3D7` miRNA that are differentially expressed in the other direction (while only `r nSameD1D3D7` in the same direction)! That could be an indication that the hypothesis is correct, but would need further analysis.
+
+As the hypothesis seems plausible, it would be interesting to look at these miRNA 
+```{r common_DE_genes_inverse_day13-37}
+# Finding genes that are differntailly expressed in the opposite direction between d1-3 and d3-7
+commonDEgenesInverseDay1337 <- which(dt[,4]*dt[,6] == -1)
+names(commonDEgenesInverseDay1337)
+```
+
+To further subset the miRNA, it is very probable (although would need additional tests) that the miRnA of interest are not differentially expressed between day 0 and day 1. Indeed we would like to find the miRNA that cause the difference between the groups but come back to normal at day 7.
+
+```{r common_DE_genes_inverse_day13-37_not01}
+# Finding genes that are differntailly expressed in the opposite direction between d1-3 and d3-7
+commonDEgenesInverseDay1337not01 <- which(dt[,4]*dt[,6] == -1 & dt[,1] == 0)
+names(commonDEgenesInverseDay1337not01)
+```
+
+Let's plot a random subset of these miRNA
+
+```{r}
+randRNA <- unique(names(commonDEgenesInverseDay1337not01))[sample(1:length(unique(names(commonDEgenesInverseDay1337not01))), 4, replace=FALSE)]
+prepDatTop<-prepareData2(randRNA) #format data
+
+f1 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[1]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[1]) 
+
+f2 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[2]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[2])#106b-5p
+
+f3 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[3]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[3])
+
+f4 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[4]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[4]) 
+
+grid.arrange(f1,f2,f3,f4,nrow=2) #put plots together
+
+```
+###### Finding genes that are often differentially between day 0/1 and day 3/7
+
+From all our plots that clearly showed clusters between day 0, day 1 and day 3, day 7, we could want to ask ourselves the simple question of "what miRNA are differentially expressed between the clusters" ?  
+
+```{r common_DE_genes_day01-37 }
+# Finding genes that are not zero in at least one comparaison between the groups
+commonDEgenesDay0137 <- which(dt[,2]!=0 & dt[,3]!=0 & dt[,4]!=0 & dt[,5]!=0)
+names(commonDEgenesDay0137)
+```
+
+Let's visualise it with a nice venn diagramm
+
+```{r day0137_DE_venn }
+vennDiagram(dt[,2:5], circle.col=c("turquoise", "salmon", "green","yellow"), main = "Venn diagramm showing differences between clusters")
+```
+
+###### PLot miRNA
+
+```{r }
+
+#List of genes different between the two clusters
+topGenes <- names(commonDEgenesDay0137)
+#topGenes<-c("hsa-let-7d-3p","hsa-let-7i-5p","hsa-miR-125a-5p","hsa-miR-132-3p","hsa-miR-143-3p","hsa-miR-145-5p","hsa-miR-181b-3p","hsa-miR-185-5p","hsa-miR-192-5p","hsa-miR-19b-3p","hsa-miR-223-3p","hsa-miR-23a-3p","hsa-miR-26a-5p","hsa-miR-30e-5p","hsa-miR-425-5p","hsa-miR-425-3p","hsa-miR-92a-3p")
+prepDatTop<-prepareData2(topGenes) #format data
+
+#make dataset for probe 125a - remove cell with top expression
+p125<-subset(prepDatTop,prepDatTop$gene==topGenes[6])
+p125<-p125[-which(p125$gExp==max(p125$gExp)),]
+
+f1 <- ggplot(data=p125,aes(cluster1,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(topGenes[6]) + ylim(-100,2000)
+
+f2 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==topGenes[1]),aes(cluster1,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(topGenes[16]) + ylim(-100,2000)
+
+f3 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==topGenes[2]),aes(cluster1,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(topGenes[5])+ ylim(-100,2000)#106b-5p
+
+f4 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==topGenes[3]),aes(cluster1,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(topGenes[1]) + ylim(-100,2000)
+
+grid.arrange(f1,f2,f3,f4,nrow=2) #put plots together
+
+```
+
+###### Finding genes that are differentially expressed between clusters but not whithin clusters
+
+Finally what we are really interested in are genes that are differentially expressed between clusters but not whithin clusters: here are these genes:
+
+```{r common_DE_genes_betweenCLusters_notWhithin }
+# Finding genes that are differentially expressed between clusters but not whithin clusters
+commonDEgenesBetweenNotWhithin <- which(dt[,2]!=0 & dt[,3]!=0 & dt[,4]!=0 & dt[,5]!=0 & dt[,1]==0 & dt[,6]==0)
+names(commonDEgenesBetweenNotWhithin)
+```
+
+To have a better idea of the "results", let's randomly chose a miRNA which is differentially expressed between clusters but not whithin.
+
+First let's plot the log transformed data.
+
+```{r see_random_miRNA_betweenCLusters_notWhithin}
+ggplot(dataf4[dataf4$mirna %in% names(commonDEgenesBetweenNotWhithin),], aes(x=exp, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random point plot for interaction miRNA-group") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(0,30) +
+  facet_wrap(~mirna,ncol = 3)
+```
+
+To see "the real data" let's also plot the same genes not log transformed.
+
+```{r see_random_miRNA_betweenClusters_notWhithin}
+ggplot(dataf4[dataf4$mirna %in% names(commonDEgenesBetweenNotWhithin),], aes(x=exp2, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random density plot for interaction miRNA-group: no log") +
+  theme_bw() +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(-500,10000) +
+  facet_wrap(~mirna,ncol = 3)
+```
+
+
+Let's plot a random subset of these miRNA
+
+```{r}
+randRNA <- unique(names(commonDEgenesBetweenNotWhithin))[sample(1:length(unique(names(commonDEgenesBetweenNotWhithin))), 4, replace=FALSE)]
+prepDatTop<-prepareData2(randRNA) #format data
+
+f1 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[1]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[1]) 
+
+f2 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[2]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[2])#106b-5p
+
+f3 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[3]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[3])
+
+f4 <- ggplot(data=subset(prepDatTop,prepDatTop$gene==randRNA[4]),aes(cluster,gExp,colour=Population))+
+  geom_jitter()+
+  ggtitle(randRNA[4]) 
+
+grid.arrange(f1,f2,f3,f4,nrow=2) #put plots together
+
+```
+
+# References
+
+1.	Dohner, H., Weisdorf, D.J., Bloomfield, C.D. Acute myeloid leukemia. _N Eng J Med_ __373__, 1136-1152 (2015).
+2.	Hoseini, S.S., Cheung, N.K. Acute myeloid leukemia targets for bispecific antibodies. _Blood Cancer Journal_ __7__, e522 (2017). 
+3.	Sunami, Y., Araki, M., Kan, S., Ito, A., Hironaka, Y., Imai, M., Morishita, S., Ohsaka, A., Komatsu, N. Histone acetyltransferase PCAF is required for all-trans retinoic acid-induced granulocytic differentiation in leukemia cells. _J Biol Chem_, doi: 10.1074/jbc.M116.745398 (2017).
+4.	Bartel, D.P. MicroRNAs: Genomics, biogenesis, mechanism, and function. _Cell_ __116__, 281-297 (2004).
+5.	Jian, P., Li, ZW., Fang, TY., Jian, W., Zhuan, Z., Mei, LX., Yan, WS., Jian, N. Retinoic acid induces HL-60 differentiation via  the upregulation of miR-663. _J Hematol Oncol_ __4__ doi: 10.1186/1756-8722-4-20  (2011). 
+6.	Garzon, R., Pichiorri, F., _et al_. MicroRNA gene expression during retinoic acid-induced differentiation of human acute promyelocytic leukemia. _Oncogene_ __26__, 4148-57 (2007).
+7.	Faridani, OR., Abdullayev, I., Hagemann-Jensen, M., Schell, JP., Lanner, F., Sandberg, R. Single-cell sequencing of the small-RNA transcriptome. _Nat Biotechnol_ __34__, 1264-1266 (2016). 
+8.	Van der Maaten, LJP., Hinton, GE. Visualizing high-dimensional data using t-SNE. _Journal of Machine Learning Research_ __9__, 2579-2605 (2008). 
+9.	Warde-Farley, D., Donaldson, SL., et al. The GeneMANIA prediction server: biological network integration for gene prioritization and predicting gene function. _Nucleic Acids Res_ __38__, 214-20 (2010). 
+10.	Subramanian, A. et al. Gene set enrichment analysis: a knowledge-based approach for interpreting genome-wide expression profiles. _Proc Natl Acad Sci USA_ __102__, 15545-50 (2005). 
+11. Risso, Davide, et al. "Normalization of RNA-seq data using factor analysis of control genes or samples." Nature biotechnology 32.9 (2014): 896-902.
+12. Seqc/Maqc-Iii Consortium. "A comprehensive assessment of RNA-seq accuracy, reproducibility and information content by the Sequencing Quality Control Consortium." Nature biotechnology 32.9 (2014): 903-914.
+13. Brase, Jan C., et al. "Circulating miRNAs are correlated with tumor progression in prostate cancer." International journal of cancer 128.3 (2011): 608-616.
+14. Law, Charity W., et al. "Voom: precision weights unlock linear model analysis tools for RNA-seq read counts." Genome biology 15.2 (2014): R29.
+15. Lun, Aaron TL, Davis J. McCarthy, and John C. Marioni. "A step-by-step workflow for low-level analysis of single-cell RNA-seq data with Bioconductor." F1000Research 5 (2016).
+16. Smyth, Gordon K., et al. "limma: Linear Models for Microarray and RNA-Seq Data User’s Guide." (2002).
+17. Law, Charity W., et al. "RNA-seq analysis is easy as 1-2-3 with limma, Glimma and edgeR." F1000Research 5 (2016).
+18. Smyth, Gordon K. "Linear models and empirical bayes methods for assessing differential expression in microarray experiments." Stat Appl Genet Mol Biol 3.1 (2004): 3.
+
+
+# Additional work that have been disregarded
+
+##General normalization 
+
+To be sure that the normalization is good I will continue the analysis with a more general normalization. The following is based on [this page](http://www-huber.embl.de/users/klaus/Teaching/DESeq2Predoc2014.html#pca-and-sample-heatmaps). By general I mean not specific to pikes.
+
+```{r normalize_DESeq}
+dataInitial <- read.table("../Data/raw_data/expn_matrix.txt", header = TRUE, row.names = 1)
+
+data_dayDESeq <- as.character(meta_data$Population)
+data_dayDESeq <- recode(data_dayDESeq, "HL60D0" = "Day 0", "HL60D1" = "Day 1", "HL60D3" = "Day 3", "HL60D7" = "Day 7")
+data_dayDESeq <-factor(data_dayDESeq)
+
+deSeqDat <- newCountDataSet(dataInitial, data_dayDESeq)
+
+# Note: actually it's not a real normalisation. Rather computing size factors depending on ratio of medians 
+# if all size factors are roughly equal to one, the libraries have been sequenced equally deeply.
+
+deSeqDat <- estimateSizeFactors(deSeqDat)
+head(sizeFactors(deSeqDat))
+
+idx.nz <- apply(counts(deSeqDat), 1, function(x) { all(x > 0)})
+nNZsamples <- sum(idx.nz)
+
+#will not be needed: don't keep big data
+remove(dataInitial)
+```
+
+We see that the number of non zero samples in all genes is very low compared to traditional RNA-seq: `r nNZsamples` nomrally in thousands. This may be a good reason to stick with the normalization with skie RNA.
+
+```{r plott_dispersion}
+#plotting the estimated dispersions against the mean normalized counts
+deSeqDat <- estimateDispersions(deSeqDat)
+plotDispEsts(deSeqDat)
+multidensity( counts(deSeqDat, normalized = T),xlab="mean counts", xlim=c(0, 1000))
+```
+
+```{r plott_density}
+ multiecdf( counts(deSeqDat, normalized = T),xlab="mean counts", xlim=c(0, 1000))
+```
+
+The two charts above clearly shows that the second normalisation isn't convincing. Indeed, the second chart assesses whether the normalization has worked, and the densities should overlapp since most of the genes are heavily affected by the experimental conditions. Note: The strange density chart could also be due to the fact that miRNA are very rarely expressed in every sample (as we have seen before).
+
+## Not using log transoformed data 
+
+### Mean variance trend no log
+
+Note: Seeing the strange mean variance plot above makes us think that maybe our count data doesn't need to be log transformed. Let's investigate the relationship between the mean and the variance of ou data.
+
+```{r sqrt4_mean-variance}
+#working ... HOW TO USE DATADESEQ ON NORMALIZED => NOT COUNTS ANY MORE?? + IS IT WORTH IT ? cAN we round ?
+#dataDESeq <- rlog(as.matrix(data), blind=FALSE )
+
+#takes only genes that are non zero in many samples
+#t <- n_data[which(rowSums(n_data) > 300),] 
+
+#tries plotting directly without voom
+mSqrt4 <- rowMeans(dataNZFilterdBis^0.4)
+RowSigmaSqrt16 <- function(x) {
+  (rowSums((x - rowMeans(x))^2)/(dim(x)[2] - 1))^(1/16)
+}
+v <- RowSigmaSqrt16(dataNZFilterdBis^0.4)
+
+dataNoLog <- data.frame(meanSqrt4 = mSqrt4, sigmaSqrt16 = v)
+
+ggplot(dataNoLog, aes(x=meanSqrt4, y=sigmaSqrt16)) +
+    geom_point(shape=1) +    # Use hollow circles
+    geom_smooth(method=loess,   # Add loess regression line
+                se=FALSE,
+                colour = "red") + # Don't add shaded confidence region
+  ylim(0, 2) + 
+  xlim(0,20) + 
+  ggtitle("Mean variance relationship not Voom") +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) 
+
+```
+
+From this plot we clearly see that our variance grows with 16th poqer of our 4th mean. The reasoning behind this different relationship is still unclear to us , but it could indicate that we maybe shouldn't work with the default limma package and that we should maybe do the analysis manually.  
+
+Note: using a log tranformation as in limma can help to make the data closer to normal, but as we've seen before it makes it bimodal here which is not really better. The real question to investigate is whether the errors of the linear model are normal with the non-logged transformed data. If they are, then we should maybe not log transform it.
+
+### Without log transformation
+
+```{r test_linear_model_noLog }
+data_voomed$E <- (2^data_voomed$E - 0.5)^0.4
+
+loessFit <- loess ( sigmaSqrt16~meanSqrt4, dataNoLog) 
+loessPredict  <- predict (loessFit, dataNoLog$meanSqrt4) 
+weights <- 1/(loessPredict)^16
+
+data_voomed$weights <- weights
+
+fit <- lmFit(data_voomed, design)
+fit <- contrasts.fit(fit, contrasts=contrastMatrix)
+efit <- eBayes(fit)
+topTable(efit, coef=colnames(coef(efit)))
+plotSA(efit)
+
+#will not be needed: don't keep big data
+remove(fit)
+remove(data_voomed)
+```
+
+
+### Examining the number of DE genes
+
+Let's now look at differential expression levels of genes. Note that the adjusted p-value cutoff is 5%.
+
+```{r test_linear_model_summary_noLog }
+dt <- decideTests(efit)
+summary(dt)
+```
+
+
+As we have already previously seen in the multiple plots of the previous section: most differential expressed genes are between day 0/1 and 3/7. We also note that a lot of genes in Day 3 and 7 are downregulated (compared to day 0 and 1).
+
+#### Finding genes that are often differentially expressed compared to day 0
+
+Let's look at the genes that are always differentially expressed compared to day 0 
+
+```{r common_DE_genes_day0_noLog }
+# Finding genes that are not zero in every comparaison with day 0
+commonDEgenesDay0 <- which(dt[,1]!=0 & dt[,2]!=0 & dt[,3]!=0)
+names(commonDEgenesDay0)
+```
+
+Let's visualise it with a nice venn diagramm
+
+```{r day0_DE_venn_noLog }
+vennDiagram(dt[,1:3], circle.col=c("turquoise", "salmon", "green"), main = "Venn diagramm showing differences with day 0")
+```
+
+
+#### Finding genes that are often differentially between day 0/1 and day 3/7
+
+Let's look at the genes that are always differentially between day 0/1 and 3/7 as they seem to be the ones of interest.
+
+```{r common_DE_genes_day01-37_noLog }
+# Finding genes that are not zero in every comparaison with day 0
+commonDEgenesDay0137 <- which(dt[,2]!=0 & dt[,3]!=0 & dt[,4]!=0 & dt[,5]!=0)
+names(commonDEgenesDay0137)
+```
+
+Let's visualise it with a nice venn diagramm
+
+```{r day0137_DE_venn_noLog }
+vennDiagram(dt[,2:5], circle.col=c("turquoise", "salmon", "green","yellow"),main = "Venn diagramm showing differences between clusters")
+```
+
+#### Finding genes that are differentially expressed between clusters but not whithin clusters
+
+Finally what we are really interested in are genes that are differentially expressed between clusters but not whithin clusters: here are these genes:
+
+```{r common_DE_genes_betweenCLusters_notWhithin_noLog }
+# Finding genes that are differentially expressed between clusters but not whithin clusters
+commonDEgenesBetweenNotWhithin <- which(dt[,2]!=0 & dt[,3]!=0 & dt[,4]!=0 & dt[,5]!=0 & dt[,1]==0 & dt[,6]==0)
+names(commonDEgenesBetweenNotWhithin)
+
+ggplot(dataf4[dataf4$mirna %in% names(commonDEgenesBetweenNotWhithin),], aes(x=exp2, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random point plot for interaction miRNA-group") +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(0,30) +
+  facet_wrap(~mirna,ncol = 3)
+
+ggplot(dataf4[dataf4$mirna %in% names(commonDEgenesBetweenNotWhithin),], aes(x=exp2, fill = group)) + 
+  geom_density(alpha=0.5) +
+  ggtitle("Random density plot for interaction miRNA-group: no log") +
+  theme(text = element_text(size=14),plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="none") + xlim(-500,10000) +
+  facet_wrap(~mirna,ncol = 3)
+
+#will not be needed: don't keep big data
+remove(dataf4)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
