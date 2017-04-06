@@ -404,7 +404,7 @@ Which can be approximated by
 $$R_g \sim\ \mathcal{Pois}(R_{lib} * \alpha)$$
 Taking $lim_{R_{lib} * \alpha \rightarrow \infty}$
 $$R_g \sim\ \mathcal{N}(R_{lib} * \alpha,R_{lib} * \alpha)$$
-Which clearly shows that count data violates the assumption of homoscedasticity. The problem is that ordinary least squarres assumes the same variance at each point. If the variance is higher in certain regions then these regions would get more weights than they should. Indeed $Ttest \propto \frac{1}{\sigma}$. 
+Which clearly shows that count data violates the assumption of homoscedasticity. The problem is that ordinary least squares assumes the same variance at each point. If the variance is higher in certain regions than these regions would get more weights than they should. Indeed $Ttest \propto \frac{1}{\sigma}$. 
 
 There are many possible ways to take this problem into account. We chose to go with limma voom method as it is a competitive method [(14)](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29) that works well with low count RNAseq [(15)](https://f1000research.com/articles/5-2122/v1).
 The idea is simply to fit a weighted regression, with the weights inversely proportional to the variance of the point. The variance of the point is estimated using a lowess smoother in a log(mean) - sqrt(variance) trend.
@@ -478,7 +478,7 @@ data_voomed[1:2,1:10]
 
 #### More Natural Filtered Mean-Variance Trend
 
-Thinking about it, we shouldn't filter on having as good percentage of the samples that are non zero but rather having a majority of non zero in at least one time point we have. Indeed that's what really interests us at the end, because we are going to compare the miRNAseq between days! For example imagine we had an miRNA which was highly expressed in every sample of Day 0, but equal to zero in all toher samples, then it would get filtered out because it would be non zero in only $25\%$ of the total samples. This is of course not desired. 
+Thinking about it, we shouldn't filter on having as good percentage of the samples that are non zero but rather having a majority of non zero in at least one time point we have. Indeed that's what really interests us at the end, because we are going to compare the miRNAseq between days! For example imagine we had an miRNA which was highly expressed in every sample of Day 0, but equal to zero in all other samples, then it would get filtered out because it would be non zero in only $25\%$ of the total samples. This is of course not desired. 
 
 We will thus only keep the miRNA in which at least $50\%$ of the samples in one group have count greater than 10.
 
@@ -573,7 +573,7 @@ We clearly see that the non tranformed data is not as bimodal as it seemed to be
 
 For comparing the expression of multiple miRNA we will use a linear model. In order to gain statistical power we will be using emirical bayes method to "borrow information across all miRNA". The idea of bayes method is to shrink the estimated sample variance towardsa pooled estimate, which results in more stable inference for samples with smaller size [(18)](http://www.statsci.org/smyth/pubs/ebayes.pdf). We will be using Limma's package to implement empirical bayes linear model. 
 
-**Note**: The strength of empirical bayes, is that compared to classical bayes method, it doesn't require the input of prior. Indeed, it will find a the prior from the data.
+**Note**: The strength of empirical bayes, is that compared to classical bayes method, it doesn't require the input of prior. Indeed, it will find the prior from the data.
 
 #### Linear model: day as a numeric
 
@@ -754,7 +754,7 @@ dt <- decideTests(efit)
 summary(dt)
 ```
 
-Although we see that most miRNA are not differentially expresse between day 1 and day 0, we can be suprised of the amount of differentially expressed between day 3 and day 7. From this table we could hypothesize that the majority of miRNA doesn't have the "time" to get differentially expressed between day 0 and day 1. Often these genes get differentially expressed betweeen day 1 and 3, which could have multiple effect on the whole cell. Finally between day 3 and day 7, these same genes could get differentially expressed to "return" to a state close to the initial one. From this table we could even go one step further and say that often then miRNA get upregulated from day 1 to day 3 and then downregulated back to a "normal state" from day 3 to day 7.
+Although we see that most miRNA are not differentially expressed between day 1 and day 0, we can be suprised by the amount of differentially expressed between day 3 and day 7. From this table we could hypothesize that the majority of miRNA doesn't have the "time" to get differentially expressed between day 0 and day 1. Often these genes get differentially expressed betweeen day 1 and 3, which could have multiple effect on the whole cell. Finally between day 3 and day 7, these same genes could get differentially expressed to "return" to a state close to the initial one. From this table we could even go one step further and say that often then miRNA get upregulated from day 1 to day 3 and then downregulated back to a "normal state" from day 3 to day 7.
 Of course we would need more proof to support this hypthesis, but that would be a plausible interpretation of the table.
 
 ###### Many miRNA are downregulated between day 1 and 3 and then upregulated again at day 7
@@ -871,7 +871,7 @@ commonDEgenesBetweenNotWhithin <- which(dt[,2]!=0 & dt[,3]!=0 & dt[,4]!=0 & dt[,
 names(commonDEgenesBetweenNotWhithin)
 ```
 
-To have a better idea of the "results", let's randomly chose a miRNA which is differentially expressed between clusters but not whithin.
+To have a better idea of the "results", let's randomly choose a miRNA which is differentially expressed between clusters but not whithin.
 
 First let's plot the log transformed data.
 
