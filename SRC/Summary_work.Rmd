@@ -404,7 +404,7 @@ Which can be approximated by
 $$R_g \sim\ \mathcal{Pois}(R_{lib} * \alpha)$$
 Taking $lim_{R_{lib} * \alpha \rightarrow \infty}$
 $$R_g \sim\ \mathcal{N}(R_{lib} * \alpha,R_{lib} * \alpha)$$
-Which clearly showes that count data violates the assumption of homoscedasticity. The problem is that ordinary least squarres assumes the same variance at each point. If the variance is higher in certain regions then these regions would get more weights than they should. Indeed $Ttest \propto \frac{1}{\sigma}$. 
+Which clearly shows that count data violates the assumption of homoscedasticity. The problem is that ordinary least squarres assumes the same variance at each point. If the variance is higher in certain regions then these regions would get more weights than they should. Indeed $Ttest \propto \frac{1}{\sigma}$. 
 
 There are many possible ways to take this problem into account. We chose to go with limma voom method as it is a competitive method [(14)](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29) that works well with low count RNAseq [(15)](https://f1000research.com/articles/5-2122/v1).
 The idea is simply to fit a weighted regression, with the weights inversely proportional to the variance of the point. The variance of the point is estimated using a lowess smoother in a log(mean) - sqrt(variance) trend.
